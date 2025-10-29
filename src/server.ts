@@ -1,101 +1,103 @@
-import express from "express";
+import path from "node:path";
+import express, { Request, Response } from "express";
 import cors from "cors";
 import multer from "multer";
-import path from "path";
-import fs from "fs-extra";
+import fse from "fs-extra";
 
-// ✅ initialize app
+/** ----------------- ENV ----------------- */
+const PORT = Number(process.env.PORT || 5000);
+// URL publike e serverit (Render): p.sh. https://insta-scheduler-server.onrender.com
+const APP_BASE_URL = (process.env.APP_BASE_URL || "").replace(/\/+$/, "");
+// (opsionale) kufizo CORS vetëm te Vercel domain-i yt
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN; // p.sh. https://insta-admin.vercel.app
+
+/** ----------------- APP ----------------- */
 const app = express();
-const PORT = process.env.PORT || 5000;
 
-// ✅ CORS settings
-const allowedOrigins = [
-  "http://localhost:5173",             // për testim lokal
-  /\.vercel\.app$/,                    // çdo domain nga Vercel
-  "https://insta-admin.vercel.app",    // (nëse ke domain specifik)
-];
-
+// CORS
 app.use(
-  cors({
-    origin: (origin, cb) => {
-      if (!origin) return cb(null, true);
-      if (
-        allowedOrigins.some((o) =>
-          o instanceof RegExp ? o.test(origin) : o === origin
-        )
-      ) {
-        return cb(null, true);
-      }
-      cb(new Error("CORS blocked"));
-    },
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "X-Admin-Key"],
-  })
+  cors(
+    FRONTEND_ORIGIN
+      ? { origin: [FRONTEND_ORIGIN], credentials: false }
+      : {} // prano të gjitha origjinat nëse s'është vendosur
+  )
 );
-app.options("*", cors());
 
-// ✅ ensure uploads folder exists
-const uploadDir = path.join(process.cwd(), "uploads");
-fs.ensureDirSync(uploadDir);
+// JSON body
+app.use(express.json({ limit: "10mb" }));
 
-// ✅ Multer setup
+/** ----------------- UPLOADS ----------------- */
+// uploads/ brenda projektit të builduar (dist -> ..)
+const uploadsDir = path.resolve(__dirname, "..", "uploads");
+fse.ensureDirSync(uploadsDir);
+
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (_req, file, cb) =>
-    cb(null, Date.now() + "-" + file.originalname),
+  destination: (_req, _file, cb) => cb(null, uploadsDir),
+  filename: (_req, file, cb) => {
+    const safe = file.originalname.replace(/[^\w.\-]+/g, "_");
+    cb(null, `${Date.now()}_${safe}`);
+  },
 });
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+  fileFilter: (_req, file, cb) => {
+    if ((file.mimetype || "").startsWith("image/")) return cb(null, true);
+    cb(new Error("Lejohen vetëm imazhe."));
+  },
+});
 
-// ✅ Middleware
-app.use(express.json());
-app.use("/uploads", express.static(uploadDir));
+// servirimi i skedarëve publikë
+app.use("/uploads", express.static(uploadsDir, { index: false, maxAge: "365d" }));
 
-// ✅ Simple health check
-app.get("/health", (_req, res) => res.send("OK"));
+/** ----------------- ROUTES ----------------- */
 
-// ✅ Schedule endpoint (upload ose imageUrl)
-app.post("/posts/schedule", upload.single("image"), async (req, res) => {
+// health
+app.get("/health", (_req: Request, res: Response) => {
+  res.json({ ok: true });
+});
+
+// upload
+app.post("/upload", upload.single("image"), (req: Request, res: Response) => {
   try {
-    const { caption, publishTime, account, imageUrl } = req.body;
-    const adminKey = req.headers["x-admin-key"];
-
-    // 🔒 validate admin key
-    if (adminKey !== process.env.ADMIN_API_KEY) {
-      return res.status(401).json({ error: "Unauthorized" });
+    if (!req.file) {
+      return res.status(400).json({ error: "S’u mor asnjë file." });
     }
-
-    // 🔍 kontrollo nëse ka foto
-    let finalImageUrl = imageUrl;
-    if (req.file) {
-      finalImageUrl = `${process.env.APP_BASE_URL}/uploads/${req.file.filename}`;
+    if (!APP_BASE_URL) {
+      return res.status(500).json({ error: "APP_BASE_URL mungon në server." });
     }
-
-    if (!finalImageUrl) {
-      return res.status(400).json({
-        error: "Vendos një foto (upload ose URL)",
-      });
-    }
-
-    console.log("✅ Planned post:", {
-      account,
-      caption,
-      publishTime,
-      image: finalImageUrl,
-    });
-
-    // këtu do të shtosh logjikën e planifikimit real (cron ose DB)
-    res.json({
-      success: true,
-      message: "Post planifikuar me sukses!",
-      data: { account, caption, publishTime, image: finalImageUrl },
-    });
-  } catch (err) {
-    console.error("❌ Error in schedule:", err);
-    res.status(500).json({ error: "Internal server error" });
+    const url = `${APP_BASE_URL}/uploads/${req.file.filename}`;
+    res.json({ url });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Upload error" });
   }
 });
 
-// ✅ start server
-app.listen(PORT, () =>
-  console.log(`🚀 Server running on port ${PORT}`)
-);
+// schedule (dummy – thjesht kthen sukses; këtu lidhet logjika jote)
+app.post("/posts/schedule", async (req: Request, res: Response) => {
+  try {
+    const { account, caption, imageUrl, when } = req.body || {};
+    if (!account) return res.status(400).json({ error: "Mungon account." });
+    if (!imageUrl) return res.status(400).json({ error: "Mungon imageUrl." });
+    if (!when) return res.status(400).json({ error: "Mungon koha e publikimit." });
+
+    // këtu mund të ruash në DB ose të krijosh një cron/job queue
+    // për shembull tani thjesht e kthejmë si OK:
+    return res.json({
+      ok: true,
+      scheduled: { account, caption: caption || "", imageUrl, when },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Scheduling error" });
+  }
+});
+
+// 404 JSON
+app.use((_req, res) => {
+  res.status(404).json({ error: "Not found" });
+});
+
+// start
+app.listen(PORT, () => {
+  console.log(`Server listening on http://localhost:${PORT}`);
+});
