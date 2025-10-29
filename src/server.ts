@@ -1,77 +1,100 @@
-import 'dotenv/config';
-import express, { NextFunction, Request, Response } from 'express';
-import cors from 'cors';
-import multer from 'multer';
-import path from 'path';
-import fs from 'fs-extra';
+import express, { Request, Response, NextFunction } from "express";
+import path from "node:path";
+import fs from "node:fs";
+import fse from "fs-extra";
+import multer from "multer";
+import * as dotenv from "dotenv";
+
+dotenv.config();
 
 const app = express();
-
-// --- CORS ---
-// Mund ta kufizosh me origin: ['https://<projekti-yt>.vercel.app']
-app.use(cors({ origin: true, credentials: false }));
 app.use(express.json());
 
-// --- Uploads (disk) ---
-const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
-// ❗ ZËVENDËSUAR: pa top-level await
-fs.ensureDirSync(UPLOAD_DIR);
+// --- Static uploads dir ---
+const UPLOAD_DIR = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fse.mkdirpSync(UPLOAD_DIR);
+}
+app.use("/uploads", express.static(UPLOAD_DIR));
 
+// --- Multer storage (typed) ---
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
-  filename: (_req, file, cb) => cb(null, Date.now() + '-' + (file.originalname || 'file')),
+  destination(
+    _req: Request,
+    _file: Express.Multer.File,
+    cb: (error: Error | null, destination: string) => void
+  ) {
+    cb(null, UPLOAD_DIR);
+  },
+  filename(
+    _req: Request,
+    file: Express.Multer.File,
+    cb: (error: Error | null, filename: string) => void
+  ) {
+    const ext = path.extname(file.originalname);
+    const base = path.basename(file.originalname, ext).replace(/\s+/g, "_");
+    const unique = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    cb(null, `${base}_${unique}${ext}`);
+  }
 });
-const upload = multer({ storage });
 
-// Shërbe skedarët e ngarkuar publikisht
-app.use('/uploads', express.static(UPLOAD_DIR));
+const upload = multer({
+  storage,
+  limits: { fileSize: 25 * 1024 * 1024 } // 25MB
+});
 
-// Health
-app.get('/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
+// --- Health ---
+app.get("/health", (_req: Request, res: Response) => {
+  res.json({ ok: true, ts: Date.now() });
+});
 
-// --- /upload ---
-// PRANON fushën "image"
-app.post('/upload', upload.single('image'), (req: Request, res: Response) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+// --- Upload endpoint ---
+app.post(
+  "/upload",
+  upload.single("image"),
+  (req: Request, res: Response, _next: NextFunction) => {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+    const baseUrl = process.env.APP_BASE_URL || "";
+    const publicUrl = `${baseUrl.replace(/\/$/, "")}/uploads/${encodeURIComponent(
+      req.file.filename
+    )}`;
+    return res.json({
+      ok: true,
+      file: {
+        originalname: req.file.originalname,
+        mimetype: req.file.mimetype,
+        size: req.file.size
+      },
+      url: publicUrl
+    });
+  }
+);
 
-  const base =
-    (process.env.APP_BASE_URL && process.env.APP_BASE_URL.replace(/\/+$/, '')) ||
-    `http://localhost:${process.env.PORT || 5000}`;
+// --- Schedule endpoint (mock) ---
+app.post("/posts/schedule", async (req: Request, res: Response) => {
+  const { account, caption, imageUrl, when } = req.body as {
+    account?: string;
+    caption?: string;
+    imageUrl?: string;
+    when?: string;
+  };
 
-  const publicUrl = `${base}/uploads/${encodeURIComponent(req.file.filename)}`;
+  if (!imageUrl) return res.status(400).json({ error: "imageUrl required" });
+  if (!when) return res.status(400).json({ error: "when required" });
+
+  // Këtu do të fusësh logjikën tënde reale për planifikim / postim.
+  // Për tani thjesht kthejmë OK.
   return res.json({
-    url: publicUrl,
-    filename: req.file.filename,
-    size: req.file.size,
-    mime: req.file.mimetype,
+    ok: true,
+    scheduled: { account, caption, imageUrl, when }
   });
 });
 
-// --- /posts/schedule ---
-app.post('/posts/schedule', async (req: Request, res: Response) => {
-  const { account, caption, imageUrl, when } = req.body || {};
-  if (!account || !imageUrl || !when) {
-    return res.status(400).json({ error: 'account, imageUrl, when janë të detyrueshme' });
-  }
-
-  // (këtu mund të shtosh ruajtje DB ose një queue)
-  console.log('[SCHEDULE]', { account, when, imageUrl, caption: caption?.slice(0, 40) });
-
-  return res.status(201).json({ ok: true });
-});
-
-// --- Error handler që të mos kthehet HTML ---
-app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-  console.error('ERROR:', err);
-  res.status(500).json({ error: err?.message || 'Server error' });
-});
-
-// --- Start ---
-const PORT = Number(process.env.PORT || 5000);
+// --- Start server ---
+const PORT = Number(process.env.PORT || 10000);
 app.listen(PORT, () => {
+  // eslint-disable-next-line no-console
   console.log(`Server listening on http://localhost:${PORT}`);
-  const base =
-    (process.env.APP_BASE_URL && process.env.APP_BASE_URL.replace(/\/+$/, '')) ||
-    `http://localhost:${PORT}`;
-  console.log('Public base:', base);
 });
