@@ -14,7 +14,8 @@ app.use(express.json());
 
 // --- Uploads (disk) ---
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
-await fs.ensureDir(UPLOAD_DIR);
+// ❗ ZËVENDËSUAR: pa top-level await
+fs.ensureDirSync(UPLOAD_DIR);
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
@@ -47,7 +48,6 @@ app.post('/upload', upload.single('image'), (req: Request, res: Response) => {
 });
 
 // --- /posts/schedule ---
-// Ketu thjesht ruajmë kërkesën / bëjmë log; integrimi me IG mund të vihet mbi këtë
 app.post('/posts/schedule', async (req: Request, res: Response) => {
   const { account, caption, imageUrl, when } = req.body || {};
   if (!account || !imageUrl || !when) {
@@ -57,7 +57,6 @@ app.post('/posts/schedule', async (req: Request, res: Response) => {
   // (këtu mund të shtosh ruajtje DB ose një queue)
   console.log('[SCHEDULE]', { account, when, imageUrl, caption: caption?.slice(0, 40) });
 
-  // përgjigje OK
   return res.status(201).json({ ok: true });
 });
 
