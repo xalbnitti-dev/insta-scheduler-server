@@ -1,200 +1,78 @@
-// src/server.ts
-import express, { Request, Response } from "express";
-import cors from "cors";
-import fs from "fs";
-import path from "path";
-import axios from "axios";
+import 'dotenv/config';
+import express, { NextFunction, Request, Response } from 'express';
+import cors from 'cors';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs-extra';
 
 const app = express();
-app.use(cors());
+
+// --- CORS ---
+// Mund ta kufizosh me origin: ['https://<projekti-yt>.vercel.app']
+app.use(cors({ origin: true, credentials: false }));
 app.use(express.json());
 
-// -------- CONFIG --------
-const PORT = process.env.PORT || 10000;
-const TMP_STORE = "/tmp/queue.json";
+// --- Uploads (disk) ---
+const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
+await fs.ensureDir(UPLOAD_DIR);
 
-// Mapo llogaritë sipas env që i ke vendosur te Render
-const ACCOUNTS: Record<
-  string,
-  { igId: string; pageToken: string }
-> = {
-  aurora: {
-    igId: process.env.IG_AURORA_ID || "",
-    pageToken: process.env.PAGE_AURORA_ACCESS_TOKEN || "",
-  },
-  novara: {
-    igId: process.env.IG_NOVARA_ID || "",
-    pageToken: process.env.PAGE_NOVARA_ACCESS_TOKEN || "",
-  },
-  selena: {
-    igId: process.env.IG_SELENA_ID || "",
-    pageToken: process.env.PAGE_SELENA_ACCESS_TOKEN || "",
-  },
-  cynara: {
-    igId: process.env.IG_CYNARA_ID || "",
-    pageToken: process.env.PAGE_CYNARA_ACCESS_TOKEN || "",
-  },
-};
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
+  filename: (_req, file, cb) => cb(null, Date.now() + '-' + (file.originalname || 'file')),
+});
+const upload = multer({ storage });
 
-// -------- TYPES & QUEUE --------
-type Job = {
-  id: string;
-  account: keyof typeof ACCOUNTS;
-  caption: string;
-  imageUrl: string;
-  whenISO: string; // ISO string në UTC
-  status: "pending" | "done" | "failed";
-  lastError?: string;
-};
+// Shërbe skedarët e ngarkuar publikisht
+app.use('/uploads', express.static(UPLOAD_DIR));
 
-let queue: Job[] = [];
+// Health
+app.get('/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
-// load nga /tmp (nëse ekziston)
-(function loadQueue() {
-  try {
-    if (fs.existsSync(TMP_STORE)) {
-      queue = JSON.parse(fs.readFileSync(TMP_STORE, "utf8"));
-      console.log(`[queue] loaded ${queue.length} items from /tmp`);
-    }
-  } catch (e) {
-    console.warn("[queue] load failed:", e);
-  }
-})();
+// --- /upload ---
+// PRANON fushën "image"
+app.post('/upload', upload.single('image'), (req: Request, res: Response) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-function saveQueue() {
-  try {
-    fs.writeFileSync(TMP_STORE, JSON.stringify(queue, null, 2));
-  } catch (e) {
-    console.warn("[queue] save failed:", e);
-  }
-}
+  const base =
+    (process.env.APP_BASE_URL && process.env.APP_BASE_URL.replace(/\/+$/, '')) ||
+    `http://localhost:${process.env.PORT || 5000}`;
 
-// -------- IG PUBLISH HELPERS --------
-async function publishToInstagram(
-  igBusinessId: string,
-  pageAccessToken: string,
-  imageUrl: string,
-  caption: string
-) {
-  // 1) Krijo media container
-  const createRes = await axios.post(
-    `https://graph.facebook.com/v19.0/${igBusinessId}/media`,
-    {
-      image_url: imageUrl,
-      caption,
-      is_carousel_item: false,
-    },
-    { params: { access_token: pageAccessToken } }
-  );
+  const publicUrl = `${base}/uploads/${encodeURIComponent(req.file.filename)}`;
+  return res.json({
+    url: publicUrl,
+    filename: req.file.filename,
+    size: req.file.size,
+    mime: req.file.mimetype,
+  });
+});
 
-  const containerId = createRes.data.id;
-
-  // 2) Publiko
-  const publishRes = await axios.post(
-    `https://graph.facebook.com/v19.0/${igBusinessId}/media_publish`,
-    { creation_id: containerId },
-    { params: { access_token: pageAccessToken } }
-  );
-
-  return publishRes.data;
-}
-
-// -------- PROCESSOR --------
-async function processDueJobs() {
-  const now = Date.now();
-  let processed = 0;
-  for (const job of queue) {
-    if (job.status !== "pending") continue;
-    const when = Date.parse(job.whenISO);
-    if (isNaN(when) || when > now) continue;
-
-    const accountCfg = ACCOUNTS[job.account];
-    if (!accountCfg?.igId || !accountCfg?.pageToken) {
-      job.status = "failed";
-      job.lastError = "Missing IG_ID or PAGE_TOKEN for account";
-      continue;
-    }
-
-    try {
-      console.log(`[job ${job.id}] publishing -> ${job.account}`);
-      await publishToInstagram(
-        accountCfg.igId,
-        accountCfg.pageToken,
-        job.imageUrl,
-        job.caption || ""
-      );
-      job.status = "done";
-      processed++;
-      console.log(`[job ${job.id}] ✅ published`);
-    } catch (err: any) {
-      job.status = "failed";
-      job.lastError =
-        err?.response?.data ? JSON.stringify(err.response.data) : String(err);
-      console.error(`[job ${job.id}] ❌`, job.lastError);
-    }
-  }
-  saveQueue();
-  return processed;
-}
-
-// -------- ROUTES --------
-app.get("/health", (_req, res) => res.json({ ok: true }));
-
-// planifikim nga frontend
-app.post("/posts/schedule", (req: Request, res: Response) => {
+// --- /posts/schedule ---
+// Ketu thjesht ruajmë kërkesën / bëjmë log; integrimi me IG mund të vihet mbi këtë
+app.post('/posts/schedule', async (req: Request, res: Response) => {
   const { account, caption, imageUrl, when } = req.body || {};
-
   if (!account || !imageUrl || !when) {
-    return res.status(400).json({ error: "Missing account/imageUrl/when" });
-  }
-  if (!ACCOUNTS[account]) {
-    return res.status(400).json({ error: "Unknown account" });
+    return res.status(400).json({ error: 'account, imageUrl, when janë të detyrueshme' });
   }
 
-  // datetime-local vjen si kohë lokale -> ruaj si ISO (UTC)
-  const whenISO = new Date(when).toISOString();
+  // (këtu mund të shtosh ruajtje DB ose një queue)
+  console.log('[SCHEDULE]', { account, when, imageUrl, caption: caption?.slice(0, 40) });
 
-  const job: Job = {
-    id: Math.random().toString(36).slice(2),
-    account,
-    caption: caption || "",
-    imageUrl,
-    whenISO,
-    status: "pending",
-  };
-  queue.push(job);
-  saveQueue();
-
-  console.log(
-    `[schedule] ${job.id} -> ${account} at ${whenISO} (from ${when})`
-  );
-  return res.status(201).json({ ok: true, id: job.id, whenISO });
+  // përgjigje OK
+  return res.status(201).json({ ok: true });
 });
 
-// debug: shih pending
-app.get("/posts/pending", (_req, res) => {
-  res.json(queue);
+// --- Error handler që të mos kthehet HTML ---
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  console.error('ERROR:', err);
+  res.status(500).json({ error: err?.message || 'Server error' });
 });
 
-// test: publiko tani një id
-app.post("/posts/publish-now", async (req, res) => {
-  const { id } = req.body || {};
-  const job = queue.find((j) => j.id === id);
-  if (!job) return res.status(404).json({ error: "job not found" });
-
-  job.whenISO = new Date().toISOString();
-  const n = await processDueJobs();
-  res.json({ ok: true, processed: n });
-});
-
-// endpoint për Cron Job-in
-app.get("/cron/run", async (_req, res) => {
-  const n = await processDueJobs();
-  res.json({ ok: true, processed: n, queue: queue.length });
-});
-
-// -------- START --------
+// --- Start ---
+const PORT = Number(process.env.PORT || 5000);
 app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
-  console.log("==> Your service is live 🚀");
+  const base =
+    (process.env.APP_BASE_URL && process.env.APP_BASE_URL.replace(/\/+$/, '')) ||
+    `http://localhost:${PORT}`;
+  console.log('Public base:', base);
 });
