@@ -1,21 +1,30 @@
 {
   "name": "insta-scheduler-server",
   "version": "1.0.0",
-  "type": "module",
-  "description": "Backend for Instagram scheduler (uploads, bulk schedule, Google Drive ingest, local scheduler).",
-  "main": "server.mjs",
+  "description": "Backend for Instagram scheduler",
+  "main": "dist/server.js",
+  "type": "commonjs",
   "scripts": {
-    "start": "node server.mjs"
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js"
   },
   "dependencies": {
-    "axios": "^1.7.4",
-    "better-sqlite3": "^9.4.3",
+    "axios": "^1.7.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "fs-extra": "^11.2.0",
-    "googleapis": "^144.0.0",
     "multer": "^1.4.5-lts.1",
     "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/multer": "^1.4.11",
+    "@types/node": "^20.14.9",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.4.5"
   }
 }
