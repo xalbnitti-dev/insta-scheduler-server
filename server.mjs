@@ -5,19 +5,6 @@ import fse from "fs-extra";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// Node 20 ka fetch global
-const GRAPH_V = process.env.FB_GRAPH_VERSION || "v24.0";
-
-// IG_ACCOUNT_MAP = JSON string me mapping të llogarive në token + ig_user_id.
-// Shembull vlerë ENV:
-// {"aurora":{"ig_user_id":"17841476745254762","page_access_token":"EAAX..."},
-//  "novara":{"ig_user_id":"17841476962485998","page_access_token":"EAAX..."}}
-const IG_ACCOUNT_MAP = safeParseJSON(process.env.IG_ACCOUNT_MAP || "{}");
-
-function safeParseJSON(s) {
-  try { return JSON.parse(s); } catch { return {}; }
-}
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -53,72 +40,72 @@ async function saveJobs(jobs) {
   await fse.writeJSON(JOBS_FILE, { jobs }, { spaces: 2 });
 }
 
-// ---- helpers
-function baseUrl() {
-  return (process.env.APP_BASE_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/+$/, "");
+// ---- IG account map nga env
+let IG_MAP = {};
+try {
+  IG_MAP = JSON.parse(process.env.IG_ACCOUNT_MAP || "{}");
+} catch {
+  IG_MAP = {};
 }
 
-async function publishToInstagram({ account, imageUrl, caption }) {
-  const acct = IG_ACCOUNT_MAP[account];
-  if (!acct?.ig_user_id || !acct?.page_access_token) {
+// ---- helpers
+const BASE_URL = (process.env.APP_BASE_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/+$/, "");
+
+// publish image në IG
+async function publishToInstagram({ account, caption, imageUrl }) {
+  const cfg = IG_MAP[account];
+  if (!cfg?.ig_user_id || !cfg?.page_access_token) {
     throw new Error(`Missing IG mapping for account "${account}"`);
   }
-  const igId = acct.ig_user_id;
-  const token = acct.page_access_token;
-
-  // 1) Create container
-  const createUrl = `https://graph.facebook.com/${GRAPH_V}/${igId}/media`;
-  const createParams = new URLSearchParams({
-    image_url: imageUrl,
-    caption: caption || "",
-    access_token: token
+  // 1) Krijo media
+  const mediaRes = await fetch(`https://graph.facebook.com/v24.0/${cfg.ig_user_id}/media`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      image_url: imageUrl,
+      caption: caption || "",
+      access_token: cfg.page_access_token
+    })
   });
-
-  const createRes = await fetch(createUrl, { method: "POST", body: createParams });
-  const createJson = await createRes.json();
-  if (!createRes.ok || !createJson.id) {
-    throw new Error(`Create media failed: ${JSON.stringify(createJson)}`);
+  const mediaJson = await mediaRes.json();
+  if (!mediaRes.ok) {
+    throw new Error(`IG media error: ${mediaRes.status} ${JSON.stringify(mediaJson)}`);
   }
+  const creationId = mediaJson.id;
 
-  // 2) Publish container
-  const publishUrl = `https://graph.facebook.com/${GRAPH_V}/${igId}/media_publish`;
-  const pubParams = new URLSearchParams({
-    creation_id: createJson.id,
-    access_token: token
+  // 2) Publiko
+  const pubRes = await fetch(`https://graph.facebook.com/v24.0/${cfg.ig_user_id}/media_publish`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      creation_id: creationId,
+      access_token: cfg.page_access_token
+    })
   });
-  const pubRes = await fetch(publishUrl, { method: "POST", body: pubParams });
   const pubJson = await pubRes.json();
-  if (!pubRes.ok || !pubJson.id) {
-    throw new Error(`Publish failed: ${JSON.stringify(pubJson)}`);
+  if (!pubRes.ok) {
+    throw new Error(`IG publish error: ${pubRes.status} ${JSON.stringify(pubJson)}`);
   }
-
-  return { creation_id: createJson.id, media_id: pubJson.id };
+  return pubJson; // p.sh. { id: "...post id..." }
 }
 
 // ---- health
 app.get("/health", (_req, res) => {
-  res.json({
-    ok: true,
-    time: new Date().toISOString(),
-    graph_version: GRAPH_V,
-    accounts_configured: Object.keys(IG_ACCOUNT_MAP)
-  });
+  res.json({ ok: true, time: new Date().toISOString(), baseUrl: BASE_URL || null, hasIGMap: !!Object.keys(IG_MAP).length });
 });
 
 // ---- upload (single)
 app.post("/upload", upload.single("image"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file" });
-  const bu = baseUrl();
-  const url = bu ? `${bu}/uploads/${req.file.filename}` : `/uploads/${req.file.filename}`;
+  const url = BASE_URL ? `${BASE_URL}/uploads/${req.file.filename}` : `/uploads/${req.file.filename}`;
   res.json({ url, name: req.file.originalname });
 });
 
 // ---- upload (multi)
 app.post("/upload-multi", upload.array("images", 200), (req, res) => {
   if (!req.files?.length) return res.status(400).json({ error: "No files" });
-  const bu = baseUrl();
   const files = req.files.map(f => ({
-    url: bu ? `${bu}/uploads/${f.filename}` : `/uploads/${f.filename}`,
+    url: BASE_URL ? `${BASE_URL}/uploads/${f.filename}` : `/uploads/${f.filename}`,
     name: f.originalname
   }));
   res.json({ files });
@@ -127,9 +114,7 @@ app.post("/upload-multi", upload.array("images", 200), (req, res) => {
 // ---- schedule ONE
 app.post("/posts/schedule", async (req, res) => {
   const { account, caption, imageUrl, when } = req.body || {};
-  if (!account || !imageUrl || !when) {
-    return res.status(400).json({ error: "Missing account/imageUrl/when" });
-  }
+  if (!account || !imageUrl || !when) return res.status(400).json({ error: "Missing account/imageUrl/when" });
 
   const job = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
@@ -156,32 +141,7 @@ app.get("/posts", async (_req, res) => {
   res.json({ jobs });
 });
 
-// ---- force publish now (debug): POST /debug/publish-now {id}
-app.post("/debug/publish-now", async (req, res) => {
-  const { id } = req.body || {};
-  if (!id) return res.status(400).json({ error: "Missing id" });
-  const jobs = await loadJobs();
-  const j = jobs.find(x => x.id === id);
-  if (!j) return res.status(404).json({ error: "Job not found" });
-
-  try {
-    const info = await publishToInstagram(j);
-    j.status = "published";
-    j.publishedAt = new Date().toISOString();
-    j.lastError = null;
-    await saveJobs(jobs);
-    console.log("[PUBLISH NOW]", { id: j.id, account: j.account, info });
-    res.json({ ok: true, info });
-  } catch (err) {
-    j.status = "error";
-    j.lastError = String(err?.message || err);
-    await saveJobs(jobs);
-    console.error("[PUBLISH FAIL]", j.id, j.lastError);
-    res.status(500).json({ error: j.lastError });
-  }
-});
-
-// ---- CRON: check every 30s
+// ---- CRON: kontrollon çdo 30s dhe publikon realisht në IG
 setInterval(async () => {
   try {
     const now = Date.now();
@@ -191,17 +151,24 @@ setInterval(async () => {
     for (const j of jobs) {
       if (j.status === "scheduled" && new Date(j.when).getTime() <= now) {
         try {
-          const info = await publishToInstagram(j);
+          // publikim real:
+          const result = await publishToInstagram({
+            account: j.account,
+            caption: j.caption,
+            imageUrl: j.imageUrl
+          });
+
           j.status = "published";
           j.publishedAt = new Date().toISOString();
           j.lastError = null;
+          j.ig = result;
           changed = true;
-          console.log("[PUBLISH DUE]", { id: j.id, account: j.account, info });
+          console.log("[IG PUBLISH OK]", j.id, result);
         } catch (err) {
           j.status = "error";
           j.lastError = String(err?.message || err);
           changed = true;
-          console.error("[PUBLISH FAIL]", j.id, j.lastError);
+          console.error("[IG PUBLISH FAIL]", j.id, j.lastError);
         }
       }
     }
