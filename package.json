@@ -1,17 +1,13 @@
 {
   "name": "insta-scheduler-server",
   "version": "1.0.0",
-  "description": "Backend for an Instagram scheduler.",
   "main": "dist/server.js",
+  "type": "commonjs",
   "scripts": {
     "dev": "nodemon src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js",
-    "test": "node --test"
+    "start": "node -r dotenv/config dist/server.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "MIT",
   "dependencies": {
     "axios": "^1.7.2",
     "express": "^4.19.2",
