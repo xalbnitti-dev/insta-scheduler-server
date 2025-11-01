@@ -1,16 +1,17 @@
-import { Router } from 'express';
-import { getAllPosts, addPost } from '../store/postStore';
-import { NewPostInput } from '../models/post';
+import { Router } from "express";
+import multer from "multer";
+import path from "node:path";
+import fs from "fs-extra";
 
-const router = Router();
+const r = Router();
+const UPLOAD_DIR = path.join(process.cwd(), "uploads");
+fs.ensureDirSync(UPLOAD_DIR);
+const upload = multer({ dest: UPLOAD_DIR });
 
-router.get('/posts', async (_req, res, next) => {
-  try {
-    const posts = await getAllPosts();
-    res.json(posts);
-  } catch (error) {
-    next(error);
-  }
+r.post("/upload", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file" });
+  const publicUrl = `${process.env.APP_BASE_URL}/uploads/${req.file.filename}`;
+  res.json({ url: publicUrl });
 });
 
 router.post('/schedule', async (req, res, next) => {
