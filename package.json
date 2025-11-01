@@ -7,7 +7,7 @@
   "engines": { "node": ">=18" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/server.js",
+    "start": "node dist/src/server.js",
     "dev": "tsx watch src/server.ts"
   },
   "dependencies": {
