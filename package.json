@@ -7,10 +7,9 @@
   "engines": { "node": ">=18" },
   "scripts": {
     "prebuild": "rm -rf dist || rmdir /s /q dist",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && echo '--- DIST ROOT ---' && ls -la dist || dir dist && echo '--- DIST FILES DONE ---'",
     "start": "node dist/server.js",
-    "dev": "tsx watch src/server.ts",
-    "postbuild": "node -e \"try{require('fs').readdirSync('./dist').forEach(f=>console.log('dist:',f))}catch(e){console.error(e)}\""
+    "dev": "tsx watch src/server.ts"
   },
   "dependencies": {
     "axios": "^1.7.7",
