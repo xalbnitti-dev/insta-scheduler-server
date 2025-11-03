@@ -3,29 +3,31 @@ import multer from "multer";
 import path from "node:path";
 import fs from "fs-extra";
 
-const r = Router();
+const router = Router();
+
+// dir i upload-eve
 const UPLOAD_DIR = path.join(process.cwd(), "uploads");
 fs.ensureDirSync(UPLOAD_DIR);
-const upload = multer({ dest: UPLOAD_DIR });
 
-r.post("/upload", upload.single("file"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "No file" });
-  const publicUrl = `${process.env.APP_BASE_URL}/uploads/${req.file.filename}`;
-  res.json({ url: publicUrl });
+// storage i thjeshtë
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || "");
+    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+  },
 });
+const upload = multer({ storage });
 
-router.post('/schedule', async (req, res, next) => {
+// POST /upload  (kthen URL publike)
+router.post("/upload", upload.single("file"), async (req, res) => {
   try {
-    const { caption, imageUrl, scheduledTime } = req.body as Partial<NewPostInput>;
-
-    if (!caption || !imageUrl || !scheduledTime) {
-      return res.status(400).json({ message: 'caption, imageUrl, and scheduledTime are required.' });
-    }
-
-    const newPost = await addPost({ caption, imageUrl, scheduledTime });
-    res.status(201).json(newPost);
-  } catch (error) {
-    next(error);
+    if (!req.file) return res.status(400).json({ error: "No file" });
+    const appBase = process.env.APP_BASE_URL || `http://localhost:${process.env.PORT || 10000}`;
+    const publicUrl = `${appBase}/uploads/${path.basename(req.file.path)}`;
+    return res.json({ url: publicUrl });
+  } catch (e: any) {
+    return res.status(500).json({ error: e?.message || "Upload error" });
   }
 });
 
